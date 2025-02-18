@@ -8,6 +8,7 @@ these steps have been tested for oracle linux 8
 the scripts will install configure an oracle linux 8 user, put him to sudoers and run the installation as oracle
 
 
+```csharp
 yum install -y oracle-database-preinstall-19c
 
 echo "opc ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
@@ -40,6 +41,8 @@ pip install jmespath
 ansible-galaxy collection install community.general --force
 ansible-galaxy collection install oracle.oci
 ansible-galaxy collection list | grep oracle.oci
+```
+
 
 At this stage the oracle user is configured to run the ansible collections, use the oci cli.  
   
