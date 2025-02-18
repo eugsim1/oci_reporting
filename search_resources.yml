@@ -1,0 +1,58 @@
+- name: search compute instance details to region-specific {{ item }}
+  oracle.oci.oci_resource_search_resource_facts:
+    query: "QUERY all resources "
+    type: Structured
+    region: "{{ item }}"
+  register: search_results
+  tags:
+  - get_info
+
+- name: Dump result from List resources
+  debug:
+    msg: '{{search_results}}'
+  tags:
+  - dump-resources
+
+- name: write raw file
+  copy:
+    dest: "{{local_dir}}/{{ item }}_all_resources_report_raw_{{current_date}}.csv"
+    content: "{{ search_results }}"
+  tags:
+  - dump-resources
+
+- name: Create  report file csv
+  copy:
+    dest: "{{local_dir}}/{{ item }}all_resources_report_{{current_date}}_form.csv"
+    content: |
+      {% for h in search_results.resources %}
+      {{item}}|{{ h.display_name }}|{{ h.identifier  }}|{{ h.resource_type }}|{{ h.compartment_id  }}|{{ h.time_created }}|{{ h.defined_tags }}|{{ h.lifecycle_state }}|{{current_date}}
+      {% endfor %}
+  tags:
+  - get_info
+  - write-resources
+
+- name: execute archive Data
+  shell: "{{ remote_script_dir }}/archive_data.sh '{{LOCALDB}}'"
+  become_user: oracle
+  ignore_errors: yes
+  delegate_to: local_db_server
+  tags:
+  - config_expdp
+
+- name: execute use loader to charge new data
+  shell: "{{ remote_script_dir }}/resource_loader.sh '{{LOCALDB}}'"
+  become_user: oracle
+  ignore_errors: yes
+  delegate_to: local_db_server
+  tags:
+  - config_expdp
+
+- name: Validate Load Status
+  debug:
+    msg: "SQL*Loader completed successfully"
+  when: sqlldr_status.rc == 0
+
+##### - name: Generate Comparison Reports
+#####   shell: >
+#####     sqlplus -S {{ db_user }}/{{ db_password }}@{{ db_host }}/{{ db_service }} @/opt/sql/compare_resources.sql
+#####   register: comparison_report

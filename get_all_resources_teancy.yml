@@ -1,0 +1,208 @@
+---
+- name: Fetch OCI resources and store in database
+  hosts: localhost
+  gather_facts: yes
+  vars:
+    csv_file: "oci_resources"
+    local_dir: "{{playbook_dir}}/data"
+    archive_dir: "{{playbook_dir}}/archives"
+    db_name: "oci_resources.db"
+    current_date: "{{ ansible_date_time.iso8601 }}"
+    db_scripts_dir: "{{playbook_dir}}/db_scripts"
+    config_file_location: "{{config_file_location}}" ## the location of of config file see README.md
+    LOCALPDB: orclpdb
+    LOCALDB: orcl
+    user_db: system
+    user_password_db: oracle
+
+  tasks:
+
+  - name: Show current date and time
+    debug:
+      msg: "The current date and time is {{ current_date }}"
+    tags:
+    - get_info
+
+  - name: Compress regular file  and remove it
+    community.general.archive:
+      path: "{{local_dir}}"
+      dest: "{{archive_dir}}/{{current_date}}_report.gz"
+      force_archive: true
+      remove: true
+    tags:
+    - get_info
+
+  - name: Ensure data directory exists
+    file:
+      path: "{{ item }}"
+      state: directory
+      mode: '0755'
+    loop:
+    - "{{local_dir}}"
+    - "{{archive_dir}}"
+    - "{{db_scripts_dir}}"
+    tags:
+    - get_info
+    - check_db
+
+  - name: Find all .sh files in the directory
+    find:
+      paths: "{{db_scripts_dir}}"
+      patterns: "*.sh"
+      file_type: file
+    register: shell_scripts
+    tags:
+    - get_info
+    - check_db
+
+  - name: debug
+    debug:
+      msg: "{{shell_scripts}}"
+
+  - name: Set executable permissions for .sh files
+    ansible.builtin.file:
+      path: "{{ item.path }}"
+      mode: "0755"
+    loop: "{{ shell_scripts.files }}"
+    tags:
+    - get_info
+    - check_db
+
+  - name: Fetch regions subscribed to the tenancy
+    oracle.oci.oci_identity_region_subscription_facts:
+      tenancy_id: "{{tenancy_id}}"
+      config_file_location: "{{config_file_location}}"
+      config_profile_name: "DEFAULT"
+    register: region_list
+    changed_when: false
+    tags:
+    - get_info
+
+  - name: debug regions
+    debug:
+      msg: "{{region_list}}"
+    tags:
+    - get_info
+
+  - name: Set regions variable
+    set_fact:
+      regions: "{{ region_list.region_subscriptions | map(attribute='region_name') | list }}"
+    tags:
+    - get_info
+
+  - name: debug regions
+    debug:
+      msg: "{{regions}}"
+    tags:
+    - get_info
+
+  #####   - name: pause 5sec
+  #####     ansible.builtin.pause:
+  #####       seconds: 5
+  #####     tags:
+  #####     - get_info
+
+  - name: Initialize CSV file with headers
+    copy:
+      content: "Resource Type,Resource ID,Display Name,Compartment ID,Region,Lifecycle State,Time Created\n"
+      dest: "{{local_dir}}/{{ csv_file }}_{{ ansible_date_time.iso8601_basic }}.csv"
+    delegate_to: localhost
+    tags:
+    - get_info
+
+  ### loop included task
+
+  - name: Run search  tasks
+    include_tasks: "search_resources.yml"
+    loop: "{{ regions }}"
+    loop_control:
+      loop_var: item
+    register: async_results
+    tags:
+    - get_info
+
+#### use this section only if you want to load the csv file to a database     
+
+  - name: check oracle db version
+    shell: "{{ db_scripts_dir }}/check_oracle_version.sh '{{LOCALDB}}' '{{LOCALPDB}}' '{{user_db}}' '{{user_password_db}}'"
+    become_user: oracle
+    ignore_errors: yes
+    delegate_to: localhost
+    register: db_check_result
+    tags:
+    - get_info
+    - check_db
+
+  - name: Show SQL Execution Output
+    debug:
+      msg: "{{ db_check_result.stdout }}"
+    tags:
+    - get_info
+    - check_db
+
+  - name: Check for SQL Errors
+    fail:
+      msg: "SQL execution failed! Error detected: {{ db_check_result.stdout }}"
+    when: "'ORA-' in db_check_result.stdout"
+    tags:
+    - get_info
+    - check_db
+
+
+#####       - name: Ensure SQLite database exists
+#####         sqlite3:
+#####           path: "{{ db_name }}"
+#####           query: |
+#####             CREATE TABLE IF NOT EXISTS current_resources (
+#####                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+#####                 resource_type TEXT,
+#####                 resource_id TEXT,
+#####                 display_name TEXT,
+#####                 compartment_id TEXT,
+#####                 region TEXT,
+#####                 lifecycle_state TEXT,
+#####                 time_created TEXT,
+#####                 execution_date TEXT
+#####             );
+#####             CREATE TABLE IF NOT EXISTS history_resources (
+#####                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+#####                 resource_type TEXT,
+#####                 resource_id TEXT,
+#####                 display_name TEXT,
+#####                 compartment_id TEXT,
+#####                 region TEXT,
+#####                 lifecycle_state TEXT,
+#####                 time_created TEXT,
+#####                 execution_date TEXT
+#####             );
+
+#####       - name: Move previous results to history table
+#####         sqlite3:
+#####           path: "{{ db_name }}"
+#####           query: |
+#####             INSERT INTO history_resources
+#####             SELECT * FROM current_resources;
+
+#####             DELETE FROM current_resources;
+
+#####       - name: Insert new results into current_resources table
+#####         sqlite3:
+#####           path: "{{ db_name }}"
+#####           query: |
+#####             .mode csv
+#####             .import {{ csv_file }} temp_table
+
+#####             INSERT INTO current_resources (resource_type, resource_id, display_name, compartment_id, region, lifecycle_state, time_created, execution_date)
+#####             SELECT resource_type, resource_id, display_name, compartment_id, region, lifecycle_state, time_created, '{{ current_date }}'
+#####             FROM temp_table;
+
+#####             DROP TABLE temp_table;
+
+#####       - name: Clean up temporary CSV file
+#####         file:
+#####           path: "{{ csv_file }}"
+#####           state: absent
+
+#####       - name: Display completion message
+#####         debug:
+#####           msg: "Resources fetched and stored in database {{ db_name }}."
